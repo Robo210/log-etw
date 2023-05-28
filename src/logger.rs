@@ -1,17 +1,26 @@
-use log::Log;
+#[cfg(any(target_os = "windows"))]
 use crossbeam_utils::sync::ShardedLock;
-use tracelogging::Guid;
-use std::collections::HashMap;
+use log::Log;
 use std::borrow::Cow;
+use std::collections::HashMap;
 use std::pin::Pin;
 use std::sync::Arc;
 use std::time::SystemTime;
-#[cfg(any(target_os = "windows"))]
-use crate::etw::*;
+use tracelogging::Guid;
 
 // Providers go in, but never come out
 lazy_static! {
-    static ref PROVIDER_CACHE: ShardedLock<HashMap<String, Pin<Arc<ProviderWrapper>>>> = ShardedLock::new(HashMap::new());
+    static ref PROVIDER_CACHE: ShardedLock<HashMap<String, Pin<Arc<ProviderWrapper>>>> =
+        ShardedLock::new(HashMap::new());
+}
+
+pub(crate) struct ExporterConfig {
+    pub(crate) default_provider_name: String,
+    pub(crate) default_provider_id: Guid,
+    pub(crate) default_provider_group: ProviderGroup,
+    //pub(crate) kwl: T,
+    pub(crate) json: bool,
+    pub(crate) common_schema: bool,
 }
 
 pub(crate) struct ProviderWrapper {
@@ -45,15 +54,21 @@ impl ProviderWrapper {
     #[cfg(all(target_os = "windows"))]
     pub(crate) fn new(
         provider_name: &str,
-        provider_group: ProviderGroup,
-        //exporter_config: ExporterConfig<C>,
+        provider_id: &Guid,
+        provider_group: &ProviderGroup,
     ) -> Pin<Arc<Self>> {
         let mut options = tracelogging_dynamic::Provider::options();
         if let ProviderGroup::Windows(guid) = provider_group {
-            options = *options.group_id(&guid);
+            options = *options.group_id(guid);
         }
 
-        let wrapper = Arc::pin(ProviderWrapper { provider: tracelogging_dynamic::Provider::new(provider_name, &options) });
+        let wrapper = Arc::pin(ProviderWrapper {
+            provider: tracelogging_dynamic::Provider::new_with_id(
+                provider_name,
+                &options,
+                provider_id,
+            ),
+        });
         unsafe {
             wrapper.as_ref().get_provider().register();
         }
@@ -62,18 +77,13 @@ impl ProviderWrapper {
     }
 
     #[cfg(all(target_os = "linux"))]
-    pub(crate) fn new(
-        provider_name: &str,
-        provider_group: ProviderGroup,
-        _use_byte_for_bools: bool,
-        exporter_config: ExporterConfig<C>,
-    ) -> Self {
+    pub(crate) fn new(provider_name: &str, provider_group: &ProviderGroup) -> Self {
         let mut options = eventheader_dynamic::Provider::new_options();
         if let ProviderGroup::Linux(ref name) = provider_group {
             options = *options.group_name(&name);
         }
         let mut provider = eventheader_dynamic::Provider::new(provider_name, &options);
-        user_events::register_eventsets(&mut provider, &exporter_config);
+        user_events::register_eventsets(&mut provider);
 
         BatchExporter {
             ebw: user_events::UserEventsExporter::new(Arc::new(provider), exporter_config),
@@ -81,6 +91,7 @@ impl ProviderWrapper {
     }
 }
 
+#[derive(Clone)]
 pub(crate) enum ProviderGroup {
     Unset,
     #[allow(dead_code)]
@@ -95,7 +106,6 @@ pub struct ExporterBuilder {
     pub(crate) provider_group: ProviderGroup,
     pub(crate) json: bool,
     pub(crate) emit_common_schema_events: bool,
-    //pub(crate) exporter_config: Option<Box<dyn KeywordLevelProvider>>,
 }
 
 /// Create an exporter builder. After configuring the builder,
@@ -108,7 +118,6 @@ pub fn new_logger(name: &str) -> ExporterBuilder {
         provider_group: ProviderGroup::Unset,
         json: false,
         emit_common_schema_events: false,
-        //exporter_config: None,
     }
 }
 
@@ -210,7 +219,13 @@ impl ExporterBuilder {
     pub fn install(self) {
         self.validate_config();
 
-        let _ = log::set_boxed_logger(Box::new(EtwEventHeaderLogger{}));
+        let _ = log::set_boxed_logger(Box::new(EtwEventHeaderLogger::new(ExporterConfig {
+            default_provider_name: self.provider_name,
+            default_provider_id: self.provider_id,
+            default_provider_group: self.provider_group,
+            json: self.json,
+            common_schema: self.emit_common_schema_events,
+        })));
         log::set_max_level(log::LevelFilter::Trace);
     }
 }
@@ -225,63 +240,92 @@ pub(crate) fn map_level(level: log::Level) -> u8 {
     }
 }
 
-fn create_provider(provider_name: &str) -> Pin<Arc<ProviderWrapper>> {
-    let mut guard = PROVIDER_CACHE.write().unwrap();
+struct EtwEventHeaderLogger {
+    exporter_config: ExporterConfig,
+}
 
-    // Check again to see if it has already been created before we got the write lock
-    if let Some(provider) = guard.get(provider_name) {
-        provider.clone()
-    } else {
-        guard.insert(provider_name.to_string(), ProviderWrapper::new(provider_name, ProviderGroup::Unset));
+impl EtwEventHeaderLogger {
+    pub fn new(exporter_config: ExporterConfig) -> EtwEventHeaderLogger {
+        EtwEventHeaderLogger { exporter_config }
+    }
 
-        if let Some(provider) = guard.get(provider_name) {
-            provider.clone()
+    fn get_or_create_provider(&self, target_provider_name: &str) -> Pin<Arc<ProviderWrapper>> {
+        fn create_provider(
+            target_provider_name: &str,
+            exporter_config: &ExporterConfig,
+        ) -> Pin<Arc<ProviderWrapper>> {
+            let mut guard = PROVIDER_CACHE.write().unwrap();
+
+            let (provider_name, provider_id, provider_group) = if !target_provider_name.is_empty() {
+                (
+                    target_provider_name,
+                    Guid::from_name(target_provider_name),
+                    &ProviderGroup::Unset,
+                ) // TODO
+            } else {
+                // Since the target defaults to module_path!(), we never actually get here unless the developer uses target: ""
+                (
+                    exporter_config.default_provider_name.as_str(),
+                    exporter_config.default_provider_id,
+                    &exporter_config.default_provider_group,
+                )
+            };
+
+            // Check again to see if it has already been created before we got the write lock
+            if let Some(provider) = guard.get(provider_name) {
+                provider.clone()
+            } else {
+                guard.insert(
+                    provider_name.to_string(),
+                    ProviderWrapper::new(provider_name, &provider_id, provider_group),
+                );
+
+                if let Some(provider) = guard.get(provider_name) {
+                    provider.clone()
+                } else {
+                    panic!()
+                }
+            }
+        }
+
+        fn get_provider(provider_name: &str) -> Option<Pin<Arc<ProviderWrapper>>> {
+            PROVIDER_CACHE.read().unwrap().get(provider_name).cloned()
+        }
+
+        let provider_name = if target_provider_name.is_empty() {
+            target_provider_name
         } else {
-            panic!()
+            self.exporter_config.default_provider_name.as_str()
+        };
+
+        if let Some(provider) = get_provider(provider_name) {
+            provider
+        } else {
+            create_provider(target_provider_name, &self.exporter_config)
         }
     }
 }
 
-fn get_provider(provider_name: &str) -> Option<Pin<Arc<ProviderWrapper>>> {
-    PROVIDER_CACHE.read().unwrap().get(provider_name).cloned()
-}
-
-fn get_or_create_provider(provider_name: &str) -> Pin<Arc<ProviderWrapper>> {
-    if let Some(provider) = get_provider(provider_name) {
-        provider
-    } else {
-        create_provider(provider_name)
-    }
-}
-
-struct EtwEventHeaderLogger {}
-
-impl EtwEventHeaderLogger {
-    //pub fn new(provider_name)
-}
-
 impl Log for EtwEventHeaderLogger {
     fn enabled(&self, metadata: &log::Metadata) -> bool {
-        let provider = get_or_create_provider(metadata.target());
+        let provider = self.get_or_create_provider(metadata.target());
         provider.enabled(map_level(metadata.level()), 0)
     }
 
-    fn flush(&self) {
-        
-    }
+    fn flush(&self) {}
 
     fn log(&self, record: &log::Record) {
         // Capture the current timestamp ASAP
         let timestamp = SystemTime::now();
 
-        let provider = get_or_create_provider(record.target());
+        let provider = self.get_or_create_provider(record.target());
         provider.as_ref().write_record(timestamp, record);
     }
 }
 
 #[cfg(test)]
 mod tests {
-    use log::warn;
+    use log::{error, warn};
 
     use super::*;
 
@@ -290,5 +334,6 @@ mod tests {
         new_logger("MyDefaultProviderName").install();
 
         warn!(target: "MyRealProviderName", "My warning message");
+        error!("My error message: {}", "hi");
     }
 }

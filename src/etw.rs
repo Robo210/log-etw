@@ -1,8 +1,8 @@
-use std::{cell::RefCell, time::SystemTime, pin::Pin};
 use crate::logger::{map_level, ProviderWrapper};
 use chrono::{Datelike, Timelike};
-use tracelogging_dynamic::EventBuilder;
+use std::{cell::RefCell, pin::Pin, time::SystemTime};
 use tracelogging::*;
+use tracelogging_dynamic::EventBuilder;
 
 thread_local! {static EBW: std::cell::RefCell<EventBuilder>  = RefCell::new(EventBuilder::new());}
 
@@ -46,7 +46,12 @@ impl ProviderWrapper {
             eb.reset(&event_name, level.into(), keyword, 0);
             eb.opcode(Opcode::Info);
 
-            eb.add_systemtime("time", &Into::<Win32SystemTime>::into(timestamp).st, OutType::DateTimeUtc, 0);
+            eb.add_systemtime(
+                "time",
+                &Into::<Win32SystemTime>::into(timestamp).st,
+                OutType::DateTimeUtc,
+                0,
+            );
 
             let payload = format!("{}", record.args());
             eb.add_str8("Payload", payload, OutType::Utf8, 0);
