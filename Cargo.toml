@@ -9,6 +9,11 @@ authors = ["Kyle Sabo", "Microsoft"]
 
 [lib]
 
+[features]
+json = ["dep:serde", "dep:serde_json"]
+spans = ["dep:opentelemetry_api"]
+default = ["spans"]
+
 [dependencies]
 log = {version="0.4", features=["std"]}
 crossbeam-utils = "0.8"
@@ -18,3 +23,6 @@ tracelogging = ">= 1.1.0"
 tracelogging_dynamic = ">= 1.1.0"
 eventheader = "0.2"
 eventheader_dynamic = "0.2"
+opentelemetry_api = {version="0.19", default-features=false, optional=true, features=["trace"]}
+serde = {version = "1.0", optional=true}
+serde_json = {version="1.0", optional=true}
