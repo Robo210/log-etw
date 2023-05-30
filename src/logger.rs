@@ -319,7 +319,9 @@ impl Log for EtwEventHeaderLogger {
         let timestamp = SystemTime::now();
 
         let provider = self.get_or_create_provider(record.target());
-        provider.as_ref().write_record(timestamp, record, &self.exporter_config);
+        provider
+            .as_ref()
+            .write_record(timestamp, record, &self.exporter_config);
     }
 }
 

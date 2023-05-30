@@ -1,4 +1,4 @@
-use crate::logger::{map_level, ProviderWrapper, ExporterConfig};
+use crate::logger::{map_level, ExporterConfig, ProviderWrapper};
 use chrono::{Datelike, Timelike};
 use std::{cell::RefCell, pin::Pin, time::SystemTime};
 use tracelogging::*;
@@ -30,7 +30,12 @@ impl From<std::time::SystemTime> for Win32SystemTime {
 }
 
 impl ProviderWrapper {
-    pub(crate) fn write_record(self: Pin<&Self>, timestamp: SystemTime, record: &log::Record, exporter_config: &ExporterConfig) {
+    pub(crate) fn write_record(
+        self: Pin<&Self>,
+        timestamp: SystemTime,
+        record: &log::Record,
+        exporter_config: &ExporterConfig,
+    ) {
         let event_name = "Event"; // TODO
 
         let level = map_level(record.level());
@@ -74,45 +79,60 @@ impl ProviderWrapper {
                 eb.reset(&event_name, level.into(), keyword, 0);
                 eb.opcode(Opcode::Info);
 
-                let mut parta_field_count = 1;
-                let mut span_id: Option<[u8; 16]> = None;
-                let mut trace_id: Option<[u8; 32]> = None;
-                #[cfg(any(feature="spans"))]
+                let parta_field_count;
+                let span_id: Option<[u8; 16]>;
+                let trace_id: Option<[u8; 32]>;
+                #[cfg(any(feature = "spans"))]
                 {
                     use std::io::Write;
 
                     let active_span_id: [u8; 16];
                     let active_trace_id: [u8; 32];
 
-                    (active_span_id, active_trace_id) = opentelemetry_api::trace::get_active_span(|span| {
-                        if span.span_context().span_id() != opentelemetry_api::trace::SpanId::INVALID {
-                            let trace_id = unsafe {
-                                let mut trace_id = std::mem::MaybeUninit::<[u8; 32]>::uninit();
-                                let mut cur = std::io::Cursor::new((&mut *trace_id.as_mut_ptr()).as_mut_slice());
-                                write!(&mut cur, "{:32x}", span.span_context().trace_id()).expect("!write");
-                                trace_id.assume_init()
-                            };
-                    
-                            let span_id = unsafe {
-                                let mut span_id = std::mem::MaybeUninit::<[u8; 16]>::uninit();
-                                let mut cur = std::io::Cursor::new((&mut *span_id.as_mut_ptr()).as_mut_slice());
-                                write!(&mut cur, "{:16x}", span.span_context().span_id()).expect("!write");
-                                span_id.assume_init()
-                            };
+                    (active_span_id, active_trace_id) =
+                        opentelemetry_api::trace::get_active_span(|span| {
+                            if span.span_context().span_id()
+                                != opentelemetry_api::trace::SpanId::INVALID
+                            {
+                                let trace_id = unsafe {
+                                    let mut trace_id = std::mem::MaybeUninit::<[u8; 32]>::uninit();
+                                    let mut cur = std::io::Cursor::new(
+                                        (&mut *trace_id.as_mut_ptr()).as_mut_slice(),
+                                    );
+                                    write!(&mut cur, "{:32x}", span.span_context().trace_id())
+                                        .expect("!write");
+                                    trace_id.assume_init()
+                                };
 
-                            parta_field_count += 1;
-                            (span_id, trace_id)
-                        } else {
-                            ([0; 16], [0; 32])
-                        }
-                    });
+                                let span_id = unsafe {
+                                    let mut span_id = std::mem::MaybeUninit::<[u8; 16]>::uninit();
+                                    let mut cur = std::io::Cursor::new(
+                                        (&mut *span_id.as_mut_ptr()).as_mut_slice(),
+                                    );
+                                    write!(&mut cur, "{:16x}", span.span_context().span_id())
+                                        .expect("!write");
+                                    span_id.assume_init()
+                                };
 
+                                (span_id, trace_id)
+                            } else {
+                                ([0; 16], [0; 32])
+                            }
+                        });
+
+                    parta_field_count = 2;
                     span_id = Some(active_span_id);
                     trace_id = Some(active_trace_id);
                 }
+                #[cfg(not(any(feature = "spans")))]
+                {
+                    parta_field_count = 1;
+                    span_id = None;
+                    trace_id = None;
+                }
 
                 eb.add_u16("__csver__", 0x0401, OutType::Signed, 0);
-                eb.add_struct("PartA", 2 /* + exts.len() as u8*/, 0);
+                eb.add_struct("PartA", parta_field_count, 0);
                 {
                     let time: String = chrono::DateTime::to_rfc3339(
                         &chrono::DateTime::<chrono::Utc>::from(timestamp),
@@ -122,8 +142,8 @@ impl ProviderWrapper {
                     if trace_id.is_some() {
                         eb.add_struct("ext_dt", 2, 0);
                         {
-                            eb.add_str8("traceId", &trace_id.unwrap(), OutType::Utf8, 0); // TODO
-                            eb.add_str8("spanId", &span_id.unwrap(), OutType::Utf8, 0); // TODO
+                            eb.add_str8("traceId", &trace_id.unwrap(), OutType::Utf8, 0);
+                            eb.add_str8("spanId", &span_id.unwrap(), OutType::Utf8, 0);
                         }
                     }
                 }
