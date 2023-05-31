@@ -8,7 +8,8 @@ use std::sync::Arc;
 use std::time::SystemTime;
 use tracelogging::Guid;
 
-// Providers go in, but never come out
+// Providers go in, but never come out.
+// On Windows this cannot be safely compiled into a dylib, since the providers will never be dropped.
 lazy_static! {
     static ref PROVIDER_CACHE: ShardedLock<HashMap<String, Pin<Arc<ProviderWrapper>>>> =
         ShardedLock::new(HashMap::new());

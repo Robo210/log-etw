@@ -8,6 +8,7 @@ rust-version = "1.69"
 authors = ["Kyle Sabo", "Microsoft"]
 
 [lib]
+crate-type = ["rlib"]
 
 [features]
 json = ["dep:serde", "dep:serde_json"]
