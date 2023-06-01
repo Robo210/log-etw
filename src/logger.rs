@@ -20,6 +20,7 @@ pub(crate) struct ExporterConfig {
     pub(crate) default_provider_id: Guid,
     pub(crate) default_provider_group: ProviderGroup,
     //pub(crate) kwl: T,
+    #[allow(dead_code)]
     pub(crate) json: bool,
     pub(crate) common_schema: bool,
 }

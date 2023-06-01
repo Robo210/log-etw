@@ -1,5 +1,7 @@
 use crate::logger::{map_level, ExporterConfig, ProviderWrapper};
 use chrono::{Datelike, Timelike};
+#[cfg(any(feature = "kv_unstable", feature = "kv_unstable_json"))]
+use log::kv::{Visitor, source, value::Visit};
 use std::{cell::RefCell, pin::Pin, time::SystemTime};
 use tracelogging::*;
 use tracelogging_dynamic::EventBuilder;
@@ -61,6 +63,156 @@ impl ProviderWrapper {
 
                 let payload = format!("{}", record.args());
                 eb.add_str8("Payload", payload, OutType::Utf8, 0);
+
+                #[cfg(any(feature = "kv_unstable", feature = "kv_unstable_json"))]
+                {
+                    if cfg!(feature = "kv_unstable_json") && exporter_config.json {
+                        if let Ok(json) = serde_json::to_string(&source::as_map(record.key_values())) {
+                            eb.add_str8("Keys / Values", json, OutType::Json, 0);
+                        }
+                    } else {
+                        #[allow(non_camel_case_types)]
+                        enum ValueTypes {
+                            None,
+                            v_u64(u64),
+                            v_i64(i64),
+                            v_u128(u128),
+                            v_i128(i128),
+                            v_f64(f64),
+                            v_bool(bool),
+                            v_str(String), // Would be nice if we didn't have to do a heap allocation
+                            v_char(char),
+                        }
+                        struct ValueVisitor {
+                            value: ValueTypes,
+                        }
+                        impl<'v> Visit<'v> for ValueVisitor {
+                            fn visit_any(
+                                &mut self,
+                                value: log::kv::Value,
+                            ) -> Result<(), log::kv::Error> {
+                                self.value = ValueTypes::v_str(value.to_string());
+                                Ok(())
+                            }
+
+                            fn visit_bool(&mut self, value: bool) -> Result<(), log::kv::Error> {
+                                self.value = ValueTypes::v_bool(value);
+                                Ok(())
+                            }
+
+                            fn visit_borrowed_str(
+                                &mut self,
+                                value: &'v str,
+                            ) -> Result<(), log::kv::Error> {
+                                self.value = ValueTypes::v_str(value.to_string());
+                                Ok(())
+                            }
+
+                            fn visit_str(&mut self, value: &str) -> Result<(), log::kv::Error> {
+                                self.value = ValueTypes::v_str(value.to_string());
+                                Ok(())
+                            }
+
+                            fn visit_char(&mut self, value: char) -> Result<(), log::kv::Error> {
+                                self.value = ValueTypes::v_char(value);
+                                Ok(())
+                            }
+
+                            fn visit_f64(&mut self, value: f64) -> Result<(), log::kv::Error> {
+                                self.value = ValueTypes::v_f64(value);
+                                Ok(())
+                            }
+
+                            fn visit_i128(&mut self, value: i128) -> Result<(), log::kv::Error> {
+                                self.value = ValueTypes::v_i128(value);
+                                Ok(())
+                            }
+
+                            fn visit_u128(&mut self, value: u128) -> Result<(), log::kv::Error> {
+                                self.value = ValueTypes::v_u128(value);
+                                Ok(())
+                            }
+
+                            fn visit_u64(&mut self, value: u64) -> Result<(), log::kv::Error> {
+                                self.value = ValueTypes::v_u64(value);
+                                Ok(())
+                            }
+
+                            fn visit_i64(&mut self, value: i64) -> Result<(), log::kv::Error> {
+                                self.value = ValueTypes::v_i64(value);
+                                Ok(())
+                            }
+                        }
+
+                        struct KvVisitor<'a> {
+                            eb: &'a mut EventBuilder,
+                        }
+                        impl<'kvs> Visitor<'kvs> for KvVisitor<'_> {
+                            fn visit_pair(
+                                &mut self,
+                                key: log::kv::Key<'kvs>,
+                                value: log::kv::Value<'kvs>,
+                            ) -> Result<(), log::kv::Error> {
+                                let mut value_visitor = ValueVisitor {
+                                    value: ValueTypes::None,
+                                };
+                                let _ = value.visit(&mut value_visitor);
+
+                                unsafe {
+                                    match value_visitor.value {
+                                        ValueTypes::None => &mut self.eb,
+                                        ValueTypes::v_bool(value) => self.eb.add_bool32(
+                                            key.as_str(),
+                                            value as i32,
+                                            OutType::Boolean,
+                                            0,
+                                        ),
+                                        ValueTypes::v_u64(value) => {
+                                            self.eb.add_u64(key.as_str(), value, OutType::Unsigned, 0)
+                                        }
+                                        ValueTypes::v_i64(value) => {
+                                            self.eb.add_i64(key.as_str(), value, OutType::Signed, 0)
+                                        }
+                                        ValueTypes::v_u128(value) => self.eb.add_u64_sequence(
+                                            key.as_str(),
+                                            core::slice::from_raw_parts(
+                                                &value.to_le_bytes() as *const u8 as *const u64,
+                                                2,
+                                            ),
+                                            OutType::Hex,
+                                            0,
+                                        ),
+                                        ValueTypes::v_i128(value) => self.eb.add_u64_sequence(
+                                            key.as_str(),
+                                            core::slice::from_raw_parts(
+                                                &value.to_le_bytes() as *const u8 as *const u64,
+                                                2,
+                                            ),
+                                            OutType::Hex,
+                                            0,
+                                        ),
+                                        ValueTypes::v_f64(value) => {
+                                            self.eb.add_f64(key.as_str(), value, OutType::Signed, 0)
+                                        }
+                                        ValueTypes::v_char(value) => self.eb.add_u8(
+                                            key.as_str(),
+                                            value as u8,
+                                            OutType::String,
+                                            0,
+                                        ),
+                                        ValueTypes::v_str(value) => {
+                                            self.eb.add_str8(key.as_str(), value, OutType::String, 0)
+                                        }
+                                    };
+                                }
+
+                                Ok(())
+                            }
+                        }
+
+                        let _ = record.key_values().visit(&mut KvVisitor { eb: &mut eb });
+                    }
+                }
 
                 if let Some(module_path) = record.module_path() {
                     eb.add_str8("Module Path", module_path, OutType::Utf8, 0);

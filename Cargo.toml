@@ -13,7 +13,9 @@ crate-type = ["rlib"]
 [features]
 json = ["dep:serde", "dep:serde_json"]
 spans = ["dep:opentelemetry_api"]
-default = ["spans"]
+kv_unstable = ["log/kv_unstable"]
+kv_unstable_json = ["log/kv_unstable_serde", "json"]
+default = []
 
 [dependencies]
 log = {version="0.4", features=["std"]}
