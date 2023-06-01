@@ -1,6 +1,8 @@
 #[cfg(any(target_os = "windows"))]
 use crossbeam_utils::sync::ShardedLock;
 use log::Log;
+#[cfg(any(feature = "kv_unstable", feature = "kv_unstable_json"))]
+use log::as_serde;
 use std::borrow::Cow;
 use std::collections::HashMap;
 use std::pin::Pin;
@@ -320,16 +322,31 @@ impl Log for EtwEventHeaderLogger {
         // Capture the current timestamp ASAP
         let timestamp = SystemTime::now();
 
-        let provider = self.get_or_create_provider(record.target());
+        let mut provider_name = record.target();
+        let mut event_name = "Event";
+        let mut keywords = 1;
+
+        if cfg!(feature="kv_unstable_json") {
+            if let Some(meta) = record.key_values().get("_meta".into()) {
+                if let Some(meta) = meta.downcast_ref::<crate::event::meta>() {
+                    provider_name = meta.provider;
+                    event_name = meta.event_name;
+                    keywords = meta.keyword;
+                }
+            }
+        }
+
+        let provider = self.get_or_create_provider(provider_name);
         provider
             .as_ref()
-            .write_record(timestamp, record, &self.exporter_config);
+            .write_record(timestamp, event_name, keywords, record, &self.exporter_config);
     }
 }
 
 #[cfg(test)]
 mod tests {
-    use log::{error, warn};
+    use log::{error, warn, info, debug};
+    use crate::evt_meta;
 
     use super::*;
 
@@ -339,5 +356,19 @@ mod tests {
 
         warn!(target: "MyRealProviderName", "My warning message");
         error!("My error message: {}", "hi");
+    }
+
+    #[test]
+    fn test2() {
+        new_logger("MyDefaultProviderName").install();
+
+        info!(target: "FakeProviderName", _meta = log::kv::Value::capture_serde(&crate::event::meta{ provider: "MyRealProviderName", event_name: "test2", keyword: 5u64}); "My info message");
+    }
+
+    #[test]
+    fn test3() {
+        new_logger("MyDefaultProviderName").install();
+
+        debug!(_meta = evt_meta!("MyRealProviderName", "test2", 5u64); "My debug message");
     }
 }

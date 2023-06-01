@@ -35,13 +35,12 @@ impl ProviderWrapper {
     pub(crate) fn write_record(
         self: Pin<&Self>,
         timestamp: SystemTime,
+        event_name: &str,
+        keyword: u64,
         record: &log::Record,
         exporter_config: &ExporterConfig,
     ) {
-        let event_name = "Event"; // TODO
-
         let level = map_level(record.level());
-        let keyword = 0u64; // TODO
 
         if !self.enabled(level, keyword) {
             return;
