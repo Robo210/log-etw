@@ -1,8 +1,5 @@
-#[cfg(any(target_os = "windows"))]
 use crossbeam_utils::sync::ShardedLock;
 use log::Log;
-#[cfg(any(feature = "kv_unstable", feature = "kv_unstable_json"))]
-use log::as_serde;
 use std::borrow::Cow;
 use std::collections::HashMap;
 use std::pin::Pin;
@@ -31,7 +28,7 @@ pub(crate) struct ProviderWrapper {
     #[cfg(any(target_os = "windows"))]
     provider: tracelogging_dynamic::Provider,
     #[cfg(any(target_os = "linux"))]
-    provider: eventheader_dynamic::Provider,
+    provider: std::sync::RwLock<eventheader_dynamic::Provider>,
 }
 
 impl ProviderWrapper {
@@ -41,7 +38,7 @@ impl ProviderWrapper {
 
         #[cfg(any(target_os = "linux"))]
         {
-            let es = self.provider.find_set(level.into(), keyword);
+            let es = self.provider.read().unwrap().find_set(level.into(), keyword);
             if es.is_some() {
                 es.unwrap().enabled()
             } else {
@@ -52,6 +49,11 @@ impl ProviderWrapper {
 
     #[cfg(any(target_os = "windows"))]
     pub(crate) fn get_provider(self: Pin<&Self>) -> Pin<&tracelogging_dynamic::Provider> {
+        unsafe { self.map_unchecked(|s| &s.provider) }
+    }
+
+    #[cfg(any(target_os = "linux"))]
+    pub(crate) fn get_provider(self: Pin<&Self>) -> Pin<&std::sync::RwLock<eventheader_dynamic::Provider>> {
         unsafe { self.map_unchecked(|s| &s.provider) }
     }
 
@@ -81,17 +83,23 @@ impl ProviderWrapper {
     }
 
     #[cfg(all(target_os = "linux"))]
-    pub(crate) fn new(provider_name: &str, provider_group: &ProviderGroup) -> Self {
+    pub(crate) fn new(provider_name: &str, _: &Guid, provider_group: &ProviderGroup) -> Pin<Arc<Self>> {
         let mut options = eventheader_dynamic::Provider::new_options();
         if let ProviderGroup::Linux(ref name) = provider_group {
             options = *options.group_name(&name);
         }
         let mut provider = eventheader_dynamic::Provider::new(provider_name, &options);
-        user_events::register_eventsets(&mut provider);
 
-        BatchExporter {
-            ebw: user_events::UserEventsExporter::new(Arc::new(provider), exporter_config),
+        for lvl in log::Level::iter() {
+            provider.register_set(map_level(lvl).into(), 1);
         }
+
+        Arc::pin(ProviderWrapper {
+            provider: std::sync::RwLock::new(eventheader_dynamic::Provider::new(
+                provider_name,
+                &options
+            )),
+        })
     }
 }
 

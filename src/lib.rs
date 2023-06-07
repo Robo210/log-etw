@@ -1,7 +1,11 @@
 #[macro_use]
 extern crate lazy_static;
 
+#[cfg(target_os = "windows")]
 mod etw;
+#[cfg(target_os = "linux")]
+mod user_events;
+
 pub mod logger;
 
 #[cfg(feature="kv_unstable_json")]
