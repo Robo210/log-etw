@@ -353,6 +353,7 @@ impl Log for EtwEventHeaderLogger {
 
 #[cfg(test)]
 mod tests {
+    #[allow(unused_imports)]
     use log::{error, warn, info, debug};
     use crate::evt_meta;
 
@@ -363,6 +364,9 @@ mod tests {
         new_logger("MyDefaultProviderName").install();
 
         warn!(target: "MyRealProviderName", "My warning message");
+
+        #[cfg(target_os = "windows")]
+        // The default target name can contain ::, which is not a valid tracepoint name, causing a panic
         error!("My error message: {}", "hi");
     }
 
