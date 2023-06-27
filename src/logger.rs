@@ -38,7 +38,11 @@ impl ProviderWrapper {
 
         #[cfg(any(target_os = "linux"))]
         {
-            let es = self.provider.read().unwrap().find_set(level.into(), keyword);
+            let es = self
+                .provider
+                .read()
+                .unwrap()
+                .find_set(level.into(), keyword);
             if es.is_some() {
                 es.unwrap().enabled()
             } else {
@@ -53,7 +57,9 @@ impl ProviderWrapper {
     }
 
     #[cfg(any(target_os = "linux"))]
-    pub(crate) fn get_provider(self: Pin<&Self>) -> Pin<&std::sync::RwLock<eventheader_dynamic::Provider>> {
+    pub(crate) fn get_provider(
+        self: Pin<&Self>,
+    ) -> Pin<&std::sync::RwLock<eventheader_dynamic::Provider>> {
         unsafe { self.map_unchecked(|s| &s.provider) }
     }
 
@@ -83,7 +89,11 @@ impl ProviderWrapper {
     }
 
     #[cfg(all(target_os = "linux"))]
-    pub(crate) fn new(provider_name: &str, _: &Guid, provider_group: &ProviderGroup) -> Pin<Arc<Self>> {
+    pub(crate) fn new(
+        provider_name: &str,
+        _: &Guid,
+        provider_group: &ProviderGroup,
+    ) -> Pin<Arc<Self>> {
         let mut options = eventheader_dynamic::Provider::new_options();
         if let ProviderGroup::Linux(ref name) = provider_group {
             options = *options.group_name(&name);
@@ -97,7 +107,7 @@ impl ProviderWrapper {
         Arc::pin(ProviderWrapper {
             provider: std::sync::RwLock::new(eventheader_dynamic::Provider::new(
                 provider_name,
-                &options
+                &options,
             )),
         })
     }
@@ -334,7 +344,7 @@ impl Log for EtwEventHeaderLogger {
         let mut event_name = "Event";
         let mut keywords = 1;
 
-        if cfg!(feature="kv_unstable_json") {
+        if cfg!(feature = "kv_unstable_json") {
             if let Some(meta) = record.key_values().get("_meta".into()) {
                 if let Some(meta) = meta.downcast_ref::<crate::event::meta>() {
                     provider_name = meta.provider;
@@ -345,17 +355,21 @@ impl Log for EtwEventHeaderLogger {
         }
 
         let provider = self.get_or_create_provider(provider_name);
-        provider
-            .as_ref()
-            .write_record(timestamp, event_name, keywords, record, &self.exporter_config);
+        provider.as_ref().write_record(
+            timestamp,
+            event_name,
+            keywords,
+            record,
+            &self.exporter_config,
+        );
     }
 }
 
 #[cfg(test)]
 mod tests {
-    #[allow(unused_imports)]
-    use log::{error, warn, info, debug};
     use crate::evt_meta;
+    #[allow(unused_imports)]
+    use log::{debug, error, info, warn};
 
     use super::*;
 

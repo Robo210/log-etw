@@ -8,9 +8,9 @@ mod user_events;
 
 pub mod logger;
 
-#[cfg(feature="kv_unstable_json")]
+#[cfg(feature = "kv_unstable_json")]
 pub mod event {
-    use serde_derive::{Serialize, Deserialize};
+    use serde_derive::{Deserialize, Serialize};
 
     #[allow(non_camel_case_types)]
     #[derive(Serialize, Deserialize)]
@@ -24,6 +24,10 @@ pub mod event {
 #[macro_export]
 macro_rules! evt_meta {
     ($provider:literal, $evtname:literal, $keyword:expr) => {
-        log::kv::Value::capture_serde(&crate::event::meta{provider: $provider, event_name: $evtname, keyword: $keyword})
+        log::kv::Value::capture_serde(&crate::event::meta {
+            provider: $provider,
+            event_name: $evtname,
+            keyword: $keyword,
+        })
     };
 }

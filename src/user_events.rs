@@ -1,19 +1,30 @@
 use crate::logger::{map_level, ExporterConfig, ProviderWrapper};
-#[cfg(any(feature = "kv_unstable", feature = "kv_unstable_json"))]
-use log::kv::{Visitor, source, value::Visit};
-use std::{cell::RefCell, pin::Pin, time::SystemTime, sync::Arc};
 use eventheader::*;
 use eventheader_dynamic::EventBuilder;
+#[cfg(any(feature = "kv_unstable", feature = "kv_unstable_json"))]
+use log::kv::{source, value::Visit, Visitor};
+use std::{cell::RefCell, pin::Pin, sync::Arc, time::SystemTime};
 
 thread_local! {static EBW: std::cell::RefCell<EventBuilder>  = RefCell::new(EventBuilder::new());}
 
 impl ProviderWrapper {
-    fn find_set(self: Pin<&Self>, level: eventheader_dynamic::Level, keyword: u64) -> Option<Arc<eventheader_dynamic::EventSet>> {
+    fn find_set(
+        self: Pin<&Self>,
+        level: eventheader_dynamic::Level,
+        keyword: u64,
+    ) -> Option<Arc<eventheader_dynamic::EventSet>> {
         self.get_provider().read().unwrap().find_set(level, keyword)
     }
 
-    fn register_set(self: Pin<&Self>, level: eventheader_dynamic::Level, keyword: u64) -> Arc<eventheader_dynamic::EventSet> {
-        self.get_provider().write().unwrap().register_set(level, keyword)
+    fn register_set(
+        self: Pin<&Self>,
+        level: eventheader_dynamic::Level,
+        keyword: u64,
+    ) -> Arc<eventheader_dynamic::EventSet> {
+        self.get_provider()
+            .write()
+            .unwrap()
+            .register_set(level, keyword)
     }
 
     pub(crate) fn write_record(
@@ -59,36 +70,37 @@ impl ProviderWrapper {
                 #[cfg(any(feature = "kv_unstable", feature = "kv_unstable_json"))]
                 {
                     if cfg!(feature = "kv_unstable_json") && exporter_config.json {
-                        if let Ok(json) = serde_json::to_string(&source::as_map(record.key_values())) {
+                        if let Ok(json) =
+                            serde_json::to_string(&source::as_map(record.key_values()))
+                        {
                             eb.add_str("Keys / Values", json, FieldFormat::Default, 0);
                         }
                     } else {
-                        #[allow(non_camel_case_types)]
-                        enum ValueTypes {
-                            None,
-                            v_u64(u64),
-                            v_i64(i64),
-                            v_u128(u128),
-                            v_i128(i128),
-                            v_f64(f64),
-                            v_bool(bool),
-                            v_str(String), // Would be nice if we didn't have to do a heap allocation
-                            v_char(char),
+                        struct ValueVisitor<'v, 'a> {
+                            key_name: &'v str,
+                            eb: &'a mut EventBuilder,
                         }
-                        struct ValueVisitor {
-                            value: ValueTypes,
-                        }
-                        impl<'v> Visit<'v> for ValueVisitor {
+                        impl<'v, 'a> Visit<'v> for ValueVisitor<'v, 'a> {
                             fn visit_any(
                                 &mut self,
                                 value: log::kv::Value,
                             ) -> Result<(), log::kv::Error> {
-                                self.value = ValueTypes::v_str(value.to_string());
+                                self.eb.add_str(
+                                    self.key_name,
+                                    value.to_string(),
+                                    FieldFormat::Default,
+                                    0,
+                                );
                                 Ok(())
                             }
 
                             fn visit_bool(&mut self, value: bool) -> Result<(), log::kv::Error> {
-                                self.value = ValueTypes::v_bool(value);
+                                self.eb.add_value(
+                                    self.key_name,
+                                    value as i32,
+                                    FieldFormat::Boolean,
+                                    0,
+                                );
                                 Ok(())
                             }
 
@@ -96,42 +108,92 @@ impl ProviderWrapper {
                                 &mut self,
                                 value: &'v str,
                             ) -> Result<(), log::kv::Error> {
-                                self.value = ValueTypes::v_str(value.to_string());
+                                self.eb.add_str(
+                                    self.key_name,
+                                    value,
+                                    FieldFormat::Default,
+                                    0,
+                                );
                                 Ok(())
                             }
 
                             fn visit_str(&mut self, value: &str) -> Result<(), log::kv::Error> {
-                                self.value = ValueTypes::v_str(value.to_string());
+                                self.eb.add_str(
+                                    self.key_name,
+                                    value,
+                                    FieldFormat::Default,
+                                    0,
+                                );
                                 Ok(())
                             }
 
                             fn visit_char(&mut self, value: char) -> Result<(), log::kv::Error> {
-                                self.value = ValueTypes::v_char(value);
+                                self.eb.add_value(
+                                    self.key_name,
+                                    value as u8,
+                                    FieldFormat::String8,
+                                    0,
+                                );
                                 Ok(())
                             }
 
                             fn visit_f64(&mut self, value: f64) -> Result<(), log::kv::Error> {
-                                self.value = ValueTypes::v_f64(value);
+                                self.eb.add_value(
+                                    self.key_name,
+                                    value,
+                                    FieldFormat::Float,
+                                    0,
+                                );
                                 Ok(())
                             }
 
                             fn visit_i128(&mut self, value: i128) -> Result<(), log::kv::Error> {
-                                self.value = ValueTypes::v_i128(value);
+                                unsafe {
+                                    self.eb.add_value_sequence(
+                                        self.key_name,
+                                        core::slice::from_raw_parts(
+                                            &value.to_le_bytes() as *const u8 as *const u64,
+                                            2,
+                                        ),
+                                        FieldFormat::HexInt,
+                                        0,
+                                    );
+                                }
                                 Ok(())
                             }
 
                             fn visit_u128(&mut self, value: u128) -> Result<(), log::kv::Error> {
-                                self.value = ValueTypes::v_u128(value);
+                                unsafe {
+                                    self.eb.add_value_sequence(
+                                        self.key_name,
+                                        core::slice::from_raw_parts(
+                                            &value.to_le_bytes() as *const u8 as *const u64,
+                                            2,
+                                        ),
+                                        FieldFormat::HexInt,
+                                        0,
+                                    );
+                                }
                                 Ok(())
                             }
 
                             fn visit_u64(&mut self, value: u64) -> Result<(), log::kv::Error> {
-                                self.value = ValueTypes::v_u64(value);
+                                self.eb.add_value(
+                                    self.key_name,
+                                    value,
+                                    FieldFormat::Default,
+                                    0,
+                                );
                                 Ok(())
                             }
 
                             fn visit_i64(&mut self, value: i64) -> Result<(), log::kv::Error> {
-                                self.value = ValueTypes::v_i64(value);
+                                self.eb.add_value(
+                                    self.key_name,
+                                    value,
+                                    FieldFormat::SignedInt,
+                                    0,
+                                );
                                 Ok(())
                             }
                         }
@@ -146,57 +208,10 @@ impl ProviderWrapper {
                                 value: log::kv::Value<'kvs>,
                             ) -> Result<(), log::kv::Error> {
                                 let mut value_visitor = ValueVisitor {
-                                    value: ValueTypes::None,
+                                    key_name: key.as_str(),
+                                    eb: &mut self.eb,
                                 };
                                 let _ = value.visit(&mut value_visitor);
-
-                                unsafe {
-                                    match value_visitor.value {
-                                        ValueTypes::None => &mut self.eb,
-                                        ValueTypes::v_bool(value) => self.eb.add_value(
-                                            key.as_str(),
-                                            value as i32,
-                                            FieldFormat::Boolean,
-                                            0,
-                                        ),
-                                        ValueTypes::v_u64(value) => {
-                                            self.eb.add_value(key.as_str(), value, FieldFormat::Default, 0)
-                                        }
-                                        ValueTypes::v_i64(value) => {
-                                            self.eb.add_value(key.as_str(), value, FieldFormat::SignedInt, 0)
-                                        }
-                                        ValueTypes::v_u128(value) => self.eb.add_value_sequence(
-                                            key.as_str(),
-                                            core::slice::from_raw_parts(
-                                                &value.to_le_bytes() as *const u8 as *const u64,
-                                                2,
-                                            ),
-                                            FieldFormat::HexInt,
-                                            0,
-                                        ),
-                                        ValueTypes::v_i128(value) => self.eb.add_value_sequence(
-                                            key.as_str(),
-                                            core::slice::from_raw_parts(
-                                                &value.to_le_bytes() as *const u8 as *const u64,
-                                                2,
-                                            ),
-                                            FieldFormat::HexInt,
-                                            0,
-                                        ),
-                                        ValueTypes::v_f64(value) => {
-                                            self.eb.add_value(key.as_str(), value, FieldFormat::Float, 0)
-                                        }
-                                        ValueTypes::v_char(value) => self.eb.add_value(
-                                            key.as_str(),
-                                            value as u8,
-                                            FieldFormat::String8,
-                                            0,
-                                        ),
-                                        ValueTypes::v_str(value) => {
-                                            self.eb.add_str(key.as_str(), value, FieldFormat::Default, 0)
-                                        }
-                                    };
-                                }
 
                                 Ok(())
                             }
@@ -306,8 +321,18 @@ impl ProviderWrapper {
                         0,
                     );
 
-                    eb.add_value("severityNumber", record.level() as u8, FieldFormat::Default, 0);
-                    eb.add_str("severityText", record.level().as_str(), FieldFormat::Default, 0);
+                    eb.add_value(
+                        "severityNumber",
+                        record.level() as u8,
+                        FieldFormat::Default,
+                        0,
+                    );
+                    eb.add_str(
+                        "severityText",
+                        record.level().as_str(),
+                        FieldFormat::Default,
+                        0,
+                    );
                 }
 
                 eb.add_struct("PartC", 1, 0);
